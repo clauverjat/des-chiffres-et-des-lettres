@@ -1,5 +1,6 @@
 import logging
 import sys
+
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 from dataclasses import dataclass
 from typing import Any, List
@@ -11,8 +12,8 @@ from z3 import *
 from examples.helpers import *
 from functools import partial
 
-
 game_example = {"numbers": [8, 10, 2, 1, 5, 50], "objective": 899}
+
 
 def mk_State(numbers):
     @dataclass
@@ -22,9 +23,9 @@ def mk_State(numbers):
         numbers_used: List[z3.Bool]
 
         def __init__(self, i):
-            self.index=Int(f"index[{i}]")
-            self.stack=Array(f"stack[{i}]", IntSort(), IntSort())
-            self.numbers_used=[Bool(f"used[{i}]({n})") for n, _ in enumerate(numbers)]
+            self.index = Int(f"index[{i}]")
+            self.stack = Array(f"stack[{i}]", IntSort(), IntSort())
+            self.numbers_used = [Bool(f"used[{i}]({n})") for n, _ in enumerate(numbers)]
 
         def string(self, model):
             stack_repr = ", ".join((
@@ -37,6 +38,7 @@ def mk_State(numbers):
                 for i, number_used in enumerate(numbers)
             ))
             return f"Stack : [{stack_repr}]" + "\n" + f"Numbers : {numbers_used}"
+
     return State
 
 
@@ -131,7 +133,6 @@ def push(numbers, ith, state_pre, state_post):
     )
 
 
-
 def final_predicate(target_number, state):
     return And(state.index == 1, state.stack[0] == target_number)
 
@@ -161,7 +162,8 @@ def solve_exact(input):
 
     diametre_reoccurence = 2 * len(input["numbers"]) - 1
 
-    return bmc(mk_State(input['numbers']), actions, init_predicate, partial(final_predicate, input["objective"]) , diametre_reoccurence)
+    return bmc(mk_State(input['numbers']), actions, init_predicate,
+               partial(final_predicate, input["objective"]), diametre_reoccurence)
 
 
 def solve_approx(input):
@@ -174,21 +176,21 @@ def solve_approx(input):
     diametre_reoccurence = 2 * len(input["numbers"]) - 1
 
     return bmc_approx(mk_State(input['numbers']), actions, init_predicate,
-               partial(final_state_approx_constraints, input["objective"]), diametre_reoccurence)
+                      partial(final_state_approx_constraints, input["objective"]),
+                      diametre_reoccurence)
 
 
 def abs(x):
-    return If(x >= 0,x,-x)
+    return If(x >= 0, x, -x)
 
 
 def final_state_approx_constraints(target_number, state):
     distance = Int(str(uuid1()))
     return {
-        'hard': And(state.index == 1,distance == abs(state.stack[0] - target_number), distance >= 0),
+        'hard': And(state.index == 1, distance == abs(state.stack[0] - target_number),
+                    distance >= 0),
         'criterion': distance
     }
-
-
 
 
 def show_result(model):
@@ -199,12 +201,11 @@ def show_result(model):
         print("State", i)
         print(state.string(model.z3_model))
 
+
 if __name__ == '__main__':
-    #model = solve_exact(game_example)
-    #show_result(model)
-    game_example={"numbers":[10, 20, 30, 40], "objective": 119}
+    # model = solve_exact(game_example)
+    # show_result(model)
+    game_example = {"numbers": [10, 20, 30, 40], "objective": 119}
     print("Objectif", game_example['objective'])
     model = solve_approx(game_example)
     show_result(model)
-
-
