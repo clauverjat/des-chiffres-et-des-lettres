@@ -159,28 +159,6 @@ def solve_exact(input, no_overflow, bits):
            "div": partial(div, no_overflow)},
         **{f"push_{i}": partial(push, input["numbers"], i) for i in range(len(input["numbers"]))},
     }
-    # Question 1 - Diamètre de réoccurence du système :
-    # Posons V = 2*(Nombre de constantes non utilisées) + Taille de la pile
-    # (V comme variant)
-    # Soit t une transition
-    #    * si t est un push, alors une constante est utilisée et la taille de la pile est incrémentée
-    #       donc V est décrémenté
-    #    * si t est une opération arithmétique (+, -, *, /) alors la taille de la pile est décrémentée
-    #      et le nombre de constantes utilisées reste inchangé. Donc V est décrémenté également.
-    # Donc à chaque transition V décroit strictement.
-    # A l'état initial V = 2*(Nombre constantes non utilisées)
-    # A l'état final   V >= 1 (la taille de la pile doit valoir 1)
-    # Donc il y a au plus 2*(Nombre constantes non utilisées) - 1 transitions
-    # Ainsi le diamètre de réoccurence est inférieur ou égal à 2 * (Nombre de constantes) - 1
-    #
-    # Réciproquement dans le cas général on ne peut pas faire mieux
-    # En effet considérons les (P_n) problèmes des chiffres définis par
-    #     * C = [1,1, ... ,1 (n fois)]
-    #     * Objectif = n
-    # Alors la seule solution est de faire le calcul 1 + 1 + ... + 1 (n fois) (à l'associativité près)
-    # Ce calcul nécessite n push, et (n - 1) opérations "Addition" d'où 2*n - 1 transitions.
-    #
-
 
     diametre_reoccurence = 2 * len(input["numbers"]) - 1
 
@@ -225,21 +203,23 @@ def final_state_approx_constraints(target_number, state):
 
 
 def show_result(model):
-    print("Résultat ", model.z3_model.eval(model.states[-1].stack[0]))
-    print("Actions : ", *(transition.string(model.z3_model) for transition in model.transitions))
-    for i, state in enumerate(model.states):
-        print("―" * 50)
-        print("State", i)
-        print(state.string(model.z3_model))
+    if model == None:
+        print("Pas de solution")
+    else:
+        print("Résultat ", model.z3_model.eval(model.states[-1].stack[0]))
+        print("Actions : ", *(transition.string(model.z3_model) for transition in model.transitions))
+        for i, state in enumerate(model.states):
+            print("―" * 50)
+            print("State", i)
+            print(state.string(model.z3_model))
 
 
 if __name__ == '__main__':
-    # model = solve_exact(game_example, bits=14)
-    # show_result(model)
     begin = time()
-    game_example = {"numbers": [10, 20, 30, 40], "objective": 119}
+    game_example = {"numbers": [10, 20, 30, 40], "objective": 120}
     print("Objectif", game_example['objective'])
-    model = solve_approx(game_example, no_overflow=True, bits=7)
+    model = solve_exact(game_example, no_overflow=True, bits=7)
+    # model = solve_approx(game_example, no_overflow=True, bits=7)
     show_result(model)
     end = time()
     print("Time to solve : ", end-begin, "s")
