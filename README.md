@@ -1,3 +1,6 @@
+# Auteurs
+Corentin Lauverjat, Simon Thoby
+
 # Réponses aux questions
 ## Question 1 
 
