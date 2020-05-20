@@ -15,7 +15,7 @@ from functools import partial
 game_example = {"numbers": [8, 10, 2, 1, 5, 50], "objective": 899}
 
 
-def mk_State(numbers):
+def mk_State(numbers, bits):
     @dataclass
     class State:
         index: z3.Int
@@ -24,7 +24,7 @@ def mk_State(numbers):
 
         def __init__(self, i):
             self.index = Int(f"index[{i}]")
-            self.stack = Array(f"stack[{i}]", IntSort(), IntSort())
+            self.stack = Array(f"stack[{i}]", IntSort(), BitVecSort(bits))
             self.numbers_used = [Bool(f"used[{i}]({n})") for n, _ in enumerate(numbers)]
 
         def string(self, model):
@@ -49,13 +49,14 @@ def init_predicate(state):
     )
 
 
-def add(state_pre, state_post):
+def add(no_overflow, state_pre, state_post):
     return And(
         # précondition
         # deux éléments au moins dans la pile
         state_pre.index >= 2,
         # état de la pile après l'opération
         state_post.index == state_pre.index - 1,  # post
+        BVAddNoOverflow(state_pre.stack[state_pre.index - 1] , state_pre.stack[state_pre.index - 2], signed=False) if no_overflow else True,
         state_post.stack == Store(
             state_pre.stack,
             state_pre.index - 2,
@@ -66,13 +67,16 @@ def add(state_pre, state_post):
     )
 
 
-def sub(state_pre, state_post):
+def sub(no_overflow, state_pre, state_post):
     return And(
         # précondition
         # deux éléments au moins dans la pile
         state_pre.index >= 2,
         # état de la pile après l'opération
         state_post.index == state_pre.index - 1,
+        state_pre.stack[state_pre.index - 1] >= state_pre.stack[state_pre.index - 2],
+        BVSubNoUnderflow(state_pre.stack[state_pre.index - 1], state_pre.stack[state_pre.index - 2],
+                        signed=False) if no_overflow else True,
         state_post.stack == Store(
             state_pre.stack,
             state_pre.index - 2,
@@ -83,13 +87,15 @@ def sub(state_pre, state_post):
     )
 
 
-def mult(state_pre, state_post):
+def mult(no_overflow, state_pre, state_post):
     return And(
         # précondition
         # deux éléments au moins dans la pile
         state_pre.index >= 2,
         # état de la pile après l'opération
         state_post.index == state_pre.index - 1,  # post
+        BVMulNoOverflow(state_pre.stack[state_pre.index - 1], state_pre.stack[state_pre.index - 2],
+                         signed=False) if no_overflow else True,
         state_post.stack == Store(
             state_pre.stack,
             state_pre.index - 2,
@@ -100,8 +106,8 @@ def mult(state_pre, state_post):
     )
 
 
-def div(state_pre, state_post):
-    quotient = Int(str(uuid1()))
+def div(no_overflow, state_pre, state_post):
+    quotient = BitVec(str(uuid1()), state_pre.stack[0].size())
     return And(
         # précondition
         # deux éléments au moins dans la pile
@@ -109,7 +115,9 @@ def div(state_pre, state_post):
         # état de la pile après l'opération
         state_post.index == state_pre.index - 1,
         state_pre.stack[state_pre.index - 2] != 0,
-        state_pre.stack[state_pre.index - 1] - quotient * state_pre.stack[state_pre.index - 2] == 0,
+        BVMulNoOverflow(quotient, state_pre.stack[state_pre.index - 2],
+                        signed=False) if no_overflow else True,
+        quotient * state_pre.stack[state_pre.index - 2] == state_pre.stack[state_pre.index - 1],
         state_post.stack == Store(state_pre.stack, state_pre.index - 2, quotient),
         And([used1 == used2 for used1, used2 in
              zip(state_pre.numbers_used, state_post.numbers_used)]),
@@ -137,45 +145,68 @@ def final_predicate(target_number, state):
     return And(state.index == 1, state.stack[0] == target_number)
 
 
-def solve_exact(input):
+def solve_exact(input, no_overflow, bits):
+    for number in input['numbers']:
+        if number.bit_length() > bits:
+            raise ValueError(f"{number} n'est pas représentable sur {bits} bits")
+    if input['objective'].bit_length() > bits:
+        raise ValueError(f"L'objectif à atteindre {input['objective']} n'est pas représentable sur {bits} bits")
+
     actions = {
-        **{"add": add, "sub": sub, "mult": mult, "div": div},
+        **{"add": partial(add, no_overflow),
+           "sub": partial(sub, no_overflow),
+           "mult": partial(mult, no_overflow),
+           "div": partial(div, no_overflow)},
         **{f"push_{i}": partial(push, input["numbers"], i) for i in range(len(input["numbers"]))},
     }
     # Question 1 - Diamètre de réoccurence du système :
-    # * Chaque constante peut être poussée au plus une fois donc le nombre de push est inférieur ou
-    # égal au Nombre de constantes
-
-    # * Les autres opérations (+, -, +, /) diminuent à chaque fois d'une unité la taille de la pile
-    # * La taille maximale de la plus est égal aux nombres de constantes (car la seule opération qui
-    #    augmente la taille de la pile est push)
-    # * Donc il y au plus Nombre de constantes  - 1 autres opérations.
-    # Au total le diamètre de réoccurence est inférieur ou égal à 2 * Nombre de constantes - 1
+    # Posons V = 2*(Nombre de constantes non utilisées) + Taille de la pile
+    # (V comme variant)
+    # Soit t une transition
+    #    * si t est un push, alors une constante est utilisée et la taille de la pile est incrémentée
+    #       donc V est décrémenté
+    #    * si t est une opération arithmétique (+, -, *, /) alors la taille de la pile est décrémentée
+    #      et le nombre de constantes utilisées reste inchangé. Donc V est décrémenté également.
+    # Donc à chaque transition V décroit strictement.
+    # A l'état initial V = 2*(Nombre constantes non utilisées)
+    # A l'état final   V >= 1 (la taille de la pile doit valoir 1)
+    # Donc il y a au plus 2*(Nombre constantes non utilisées) - 1 transitions
+    # Ainsi le diamètre de réoccurence est inférieur ou égal à 2 * (Nombre de constantes) - 1
     #
     # Réciproquement dans le cas général on ne peut pas faire mieux
-    # En effet considérons les (P_n) problème des chiffres définis par
-    #     * C = [1,1,1,1 (n fois)]
+    # En effet considérons les (P_n) problèmes des chiffres définis par
+    #     * C = [1,1, ... ,1 (n fois)]
     #     * Objectif = n
-    # Alors la seule solution est de faire le calcul 1 + 1 + 1 + ... + 1 (n fois) (à l'associativité près)
-    # Ce calcul nécessite n push, et n - 1 opérations Addition d'où 2*n - 1.
-    # Ainsi dans le cas général le diamètre de réoccurence est égal 2 * Nombre de constantes - 1
+    # Alors la seule solution est de faire le calcul 1 + 1 + ... + 1 (n fois) (à l'associativité près)
+    # Ce calcul nécessite n push, et (n - 1) opérations "Addition" d'où 2*n - 1 transitions.
+    #
+
 
     diametre_reoccurence = 2 * len(input["numbers"]) - 1
 
-    return bmc(mk_State(input['numbers']), actions, init_predicate,
+    return bmc(mk_State(input['numbers'], bits), actions, init_predicate,
                partial(final_predicate, input["objective"]), diametre_reoccurence)
 
 
-def solve_approx(input):
+def solve_approx(input, no_overflow, bits):
+    for number in input['numbers']:
+        if number.bit_length() > bits:
+            raise ValueError(f"{number} n'est pas représentable sur {bits} bits")
+    if input['objective'].bit_length() > bits:
+        raise ValueError(
+            f"L'objectif à atteindre {input['objective']} n'est pas représentable sur {bits} bits")
+
     actions = {
-        **{"add": add, "sub": sub, "mult": mult, "div": div},
-        **{f"push_{i}": partial(push, input["numbers"], i) for i in
-           range(len(input["numbers"]))},
+        **{"add": partial(add, no_overflow),
+           "sub": partial(sub, no_overflow),
+           "mult": partial(mult, no_overflow),
+           "div": partial(div, no_overflow)},
+        **{f"push_{i}": partial(push, input["numbers"], i) for i in range(len(input["numbers"]))},
     }
 
     diametre_reoccurence = 2 * len(input["numbers"]) - 1
 
-    return bmc_approx(mk_State(input['numbers']), actions, init_predicate,
+    return bmc_approx(mk_State(input['numbers'], bits), actions, init_predicate,
                       partial(final_state_approx_constraints, input["objective"]),
                       diametre_reoccurence)
 
@@ -185,7 +216,7 @@ def abs(x):
 
 
 def final_state_approx_constraints(target_number, state):
-    distance = Int(str(uuid1()))
+    distance = BitVec(str(uuid1()), state.stack[0].size())
     return {
         'hard': And(state.index == 1, distance == abs(state.stack[0] - target_number),
                     distance >= 0),
@@ -203,9 +234,12 @@ def show_result(model):
 
 
 if __name__ == '__main__':
-    # model = solve_exact(game_example)
+    # model = solve_exact(game_example, bits=14)
     # show_result(model)
+    begin = time()
     game_example = {"numbers": [10, 20, 30, 40], "objective": 119}
     print("Objectif", game_example['objective'])
-    model = solve_approx(game_example)
+    model = solve_approx(game_example, no_overflow=True, bits=7)
     show_result(model)
+    end = time()
+    print("Time to solve : ", end-begin, "s")

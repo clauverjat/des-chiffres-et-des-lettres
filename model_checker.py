@@ -6,11 +6,6 @@ from logging import debug
 
 from z3 import *
 
-
-def abs(x):
-    return If(x >= 0, x, -x)
-
-
 @dataclass
 class Transition:
     formula: z3.BoolRef
