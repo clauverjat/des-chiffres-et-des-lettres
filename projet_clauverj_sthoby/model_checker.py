@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 from itertools import islice
 from typing import Dict, List, Any, Optional
-from uuid import uuid1
+from uuid import uuid4
 from logging import debug
 
 from z3 import *
+
 
 @dataclass
 class Transition:
@@ -19,8 +20,9 @@ class Transition:
 
 def transition(state1, state2, action_formulas):
     # on créé des booléens pour indiquer si une action a été choisie
-    actions_done = {action: Bool(str(uuid1())) for action in action_formulas}
+    actions_done = {action: Bool(str(uuid4())) for action in action_formulas}
     formula = And(
+        # Si le booléen correspondant à l'action est vrai alors l'action doit être effectuée
         *[Implies(actions_done[action], action_formulas[action](state1, state2)) for action in
           action_formulas],
         # Une et une seule action parmi les différentes possibles doit être choisie
@@ -31,26 +33,28 @@ def transition(state1, state2, action_formulas):
 
 
 @dataclass
-class Model:
+class Solution:
     z3_model: z3.z3.ModelRef
     transitions: List[Transition]
     states: List[Any]
-    difference: Int = 0
+    difference: z3.z3.Int = 0
+
+    def actions_effectuees(self):
+        return (transition.string(self.z3_model) for transition in self.transitions)
 
 
-def bmc(State, action_formulas, init_state_predicate, final_state_predicate, max_nb_transitions) -> \
-Optional[Model]:
+def bmc(State, action_formulas, init_state_predicate, final_state_predicate, max_nb_transitions
+        ) -> Optional[Solution]:
     """
     Bounded Model Checking
     :param State: Une classe décrivant un état du système
-    :param action_formulas: Un dictionnaire nom de l'action / fonction prenant en argument
-        un état de départ s_pre et un état d'arrivée s_post et
-        retournant la formule T(s_pre, s_post) où T est le prédicat caractérisant la relation
-        de transition du système
-    :param init_state_predicate: Formule (prédicat) sur l'état initial du système
-    :param final_state_predicate: Formule (prédicat) sur l'état final du système
+    :param action_formulas: Un dictionnaire qui au nom d'une action associe une fonction qui prend
+    en argument un état de départ s_pre et un état d'arrivée s_post et retourne la formule T(s_pre, s_post)
+    où T est le prédicat caractérisant la relation de transition du système
+    :param init_state_predicate: Formule Z3 (prédicat) sur l'état initial du système
+    :param final_state_predicate: Formule Z3 (prédicat) sur l'état final du système
     :param max_nb_transitions: Borne maximale du nombre de transitions effectué
-    :return:
+    :return: Un objet de la classe Model ou None si le problème est insatisfiable
     """
 
     states = []
@@ -73,7 +77,7 @@ Optional[Model]:
         solver.add(final_state_predicate(states[i + 1]))
         status = solver.check()
         if status == sat:
-            return Model(
+            return Solution(
                 z3_model=solver.model(),
                 transitions=transitions,
                 states=states
@@ -91,7 +95,15 @@ Optional[Model]:
         return None
 
 
-def bounded_models(State, action_formulas, init_state_predicate):
+def _bounded_models(State, action_formulas, init_state_predicate):
+    """
+    Génère des états et des formules sans l'état final pour faciliter
+    l'écriture de bmc_approx.
+    :param State:
+    :param action_formulas:
+    :param init_state_predicate:
+    :return: Generator[formulas, states, transitions]
+    """
     states = [State(0)]
     transitions = []
     formulas = [init_state_predicate(states[0])]
@@ -106,24 +118,24 @@ def bounded_models(State, action_formulas, init_state_predicate):
 
 
 def bmc_approx(State, action_formulas, init_state_predicate, final_state_approx_constraints,
-               max_nb_transitions) -> Optional[Model]:
+               max_nb_transitions) -> Optional[Solution]:
     """
     Bounded Model Checking avec approximation
     :param State: Une classe décrivant un état du système
-    :param action_formulas: Un dictionnaire nom de l'action / fonction prenant en argument
-        un état de départ s_pre et un état d'arrivée s_post et
-        retournant la formule T(s_pre, s_post) où T est le prédicat caractérisant la relation
-        de transition du système
-    :param init_state_predicate: Fonction prenant un état et renvoyant une formule (prédicat) sur l'état initial du système
+    :param action_formulas: Un dictionnaire qui au nom d'une action associe une fonction qui prend
+    en argument un état de départ s_pre et un état d'arrivée s_post et retourne la formule T(s_pre, s_post)
+    où T est le prédicat caractérisant la relation de transition du système
+    :param init_state_predicate: Fonction prenant un état et renvoyant un prédicat (formule Z3) décrivant l'état initial du système
     :param final_state_predicate: Fonction prenant un état et renvoyant un dictionnaire avec deux clés
-        * 'hard' formules décrivant les contraintes qui doivent être impérativement respectées pour que l'état final soit acceptable
-        * 'criterion', le critère à minimiser (un entier ou un bitvector)
+        * 'hard' un prédicat (formule Z3) décrivant les contraintes qui doivent être impérativement
+        respectées pour que l'état final soit acceptable
+        * 'criterion', un critère à minimiser (un entier ou un bitvector) sur l'état final
     :param max_nb_transitions: Borne maximale du nombre de transitions effectués
-    :return:
+    :return: Un objet de la classe Model ou None si le problème est insatisfiable
     """
     best_model = None
     for i, (formula, states, transitions) in enumerate(
-            islice(bounded_models(State, action_formulas, init_state_predicate),
+            islice(_bounded_models(State, action_formulas, init_state_predicate),
                    max_nb_transitions)):
         debug(f"Step {i + 1}/{max_nb_transitions}")
         solver = Optimize()
@@ -135,11 +147,11 @@ def bmc_approx(State, action_formulas, init_state_predicate, final_state_approx_
         if status == sat:
             cur_score = v.value().as_long()
             if best_model == None or best_model.difference > cur_score:
-                best_model = Model(
+                best_model = Solution(
                     z3_model=solver.model(),
                     transitions=transitions,
                     states=states,
-                    difference=cur_score
+                    difference=cur_score,
                 )
                 debug(f"SAT score : {cur_score}")
             if cur_score == 0:
@@ -151,12 +163,4 @@ def bmc_approx(State, action_formulas, init_state_predicate, final_state_approx_
             pass
         else:
             raise AssertionError("Cas non prévu")
-    print("End of loop :")
     return best_model
-
-
-def print_actions_effectuees(model, liste_actions):
-    for actions in liste_actions:
-        for nom, bool in actions.items():
-            if model[bool]:
-                print(nom)
